@@ -87,127 +87,67 @@ function withEvent(ticket, type, detail, actor) {
   };
 }
 
-async function callClaude(systemPrompt, userText, attempt = 1) {
-  const MAX_ATTEMPTS = 3, TIMEOUT_MS = 12000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  let response;
+async function callClaude(systemPrompt, userText) {
+
+  const langMap = {
+    English: "en",
+    Hindi: "hi",
+    Tamil: "ta",
+    Telugu: "te",
+    Kannada: "kn",
+    Malayalam: "ml",
+    Bengali: "bn",
+    Marathi: "mr",
+    Gujarati: "gu",
+    Punjabi: "pa",
+    Urdu: "ur",
+    Spanish: "es",
+    French: "fr",
+    German: "de",
+    Portuguese: "pt",
+    Arabic: "ar",
+    Chinese: "zh",
+    Japanese: "ja",
+    Russian: "ru",
+    Korean: "ko"
+  };
+
+  const target =
+    Object.keys(langMap).find(key =>
+      systemPrompt.includes(`to ${key}`)
+    ) || "English";
+
   try {
-    response = await fetch('/api/translate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ system: systemPrompt, text: userText }),
-    });
+
+    const response = await fetch(
+      "https://translate.argosopentech.com/translate",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          q: userText,
+          source: "auto",
+          target: langMap[target],
+          format: "text"
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    return data.translatedText;
+
   } catch (e) {
-    if (attempt < MAX_ATTEMPTS) { await new Promise((r) => setTimeout(r, 250 * attempt)); return callClaude(systemPrompt, userText, attempt + 1); }
-    throw new Error('Could not reach the translation service after several attempts.');
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!response.ok) {
-    if ((response.status === 429 || response.status >= 500) && attempt < MAX_ATTEMPTS) {
-      await new Promise((r) => setTimeout(r, 300 * attempt));
-      return callClaude(systemPrompt, userText, attempt + 1);
-    }
-    let detail = '';
-    try { const j = await response.json(); detail = j?.error; } catch {}
-    throw new Error(detail || `Translation service error (${response.status})`);
-  }
-  const data = await response.json();
-  if (!data.text) throw new Error('Empty translation response');
-  return data.text;
-}
 
-async function translateText(text, sourceLang, targetLang) {
-  const sys = `You are a professional support-ticket translator. Translate the user's text from ${sourceLang} to ${targetLang}. Preserve tone and technical meaning exactly. Respond with ONLY the translated text — no quotes, no notes, no explanations.`;
-  return callClaude(sys, text);
-}
+    console.error(e);
 
-/**
- * Translates a ticket's subject and body in a single API call instead of two.
- * Halves the number of round trips (each has real network + inference latency),
- * and removes the "one of two parallel calls has to retry" scenario that used
- * to make the total wait time unpredictable.
- */
-async function translatePair(subject, body, sourceLang, targetLang) {
-  const sys = `You are a professional support-ticket translator. Translate from ${sourceLang} to ${targetLang}. Preserve tone and technical meaning exactly. Respond with EXACTLY this format and nothing else:
-SUBJECT: <translated subject>
-BODY: <translated body, may span multiple lines>`;
-  const userText = `SUBJECT: ${subject}\nBODY: ${body}`;
-  const raw = await callClaude(sys, userText);
-  const match = raw.match(/SUBJECT:\s*([\s\S]*?)\n+BODY:\s*([\s\S]*)/i);
-  if (!match) throw new Error('Unexpected translation response format');
-  return { subject: match[1].trim(), body: match[2].trim() };
-}
+    throw new Error("Translation service unavailable.");
 
-/* ============================= SMALL UI PIECES ============================= */
-
-function PriorityBadge({ priority }) {
-  const p = PRIORITIES[priority];
-  return <span className={`badge ${p.cls}`}>{p.label}</span>;
-}
-function LanguageBadge({ language, direction }) {
-  return <span className="badge badge-lang">{language}{direction ? ` → ${direction}` : ''}</span>;
-}
-function StatusBadge({ status }) {
-  if (status === 'translating') return <span className="badge badge-status"><span className="loader" /> Translating</span>;
-  if (status === 'resolved') return <span className="badge badge-status badge-resolved">Resolved</span>;
-  return <span className="badge badge-status">Open</span>;
-}
-function EscalatedBadge() {
-  return <span className="badge badge-escalated">⚠ Escalated</span>;
-}
-function Countdown({ ticket }) {
-  const [, tick] = useState(0);
-  useEffect(() => { const id = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(id); }, []);
-  return <span className={`countdown c-${slaState(ticket)}`}>{formatCountdown(ticket)}</span>;
-}
-
-/* ============================= MAIN COMPONENT ============================= */
-
-export default function LinguaDeskLive() {
-  const [role, setRole] = useState('customer');
-  const [tab, setTab] = useState('queue');
-  const [tickets, setTickets] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
-  const [toast, setToast] = useState(null);
-  const [confirmTicket, setConfirmTicket] = useState(null);
-
-  const [form, setForm] = useState({ name: '', email: '', language: 'Hindi', priority: 'medium', subject: '', body: '' });
-  const [filterStatus, setFilterStatus] = useState('open');
-  const [filterPriority, setFilterPriority] = useState('all');
-
-  const CURRENT_ENGINEER = { displayName: 'Support Engineer' };
-
-  const saveInFlight = useRef(Promise.resolve());
-  const ticketsRef = useRef([]);
-
-  function showToast(msg, kind) {
-    setToast({ msg, kind });
-    clearTimeout(window.__ldToastTimer);
-    window.__ldToastTimer = setTimeout(() => setToast(null), 3800);
   }
 
-  function queueSave(nextTickets) {
-    saveInFlight.current = saveInFlight.current.then(async () => {
-      try {
-        await fetch('/api/tickets', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(nextTickets),
-        });
-      } catch {}
-    });
-  }
-
-  // Single choke point for every ticket mutation: updates React state for
-  // rendering, a ref for synchronous reads (avoids races in async code like
-  // translateIncoming), and persists to shared storage.
-  function applyTickets(next) {
-    ticketsRef.current = next;
-    setTickets(next);
-    queueSave(next);
-  }
-
+}
   function updateTickets(updater) {
     const next = typeof updater === 'function' ? updater(ticketsRef.current) : updater;
     applyTickets(next);
